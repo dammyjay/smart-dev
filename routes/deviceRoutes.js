@@ -294,7 +294,7 @@ router.post("/heartbeat", async (req, res) => {
         // Send ON command to ESP
         (async () => {
           try {
-            const espUrl = `http://${device_id}/toggle?channel=${ch}&state=on`;
+            const espUrl = `http://${device_id}/toggle?channel=${ch}&state=off`;
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 3000);
 
