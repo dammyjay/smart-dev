@@ -229,32 +229,129 @@ router.post("/toggle", async (req, res) => {
 
 // ✅ Receive people count updates from ESP devices
 
+//--------------------------------------------------------------------------------//
+// router.post("/heartbeat", async (req, res) => {
+//   const { device_id, people_count } = req.body;
+//   if (!device_id) return res.status(400).send("Missing device_id");
+
+//   try {
+//     await pool.query(
+//       `INSERT INTO devices (device_id, online, last_seen, people_count)
+//        VALUES ($1, TRUE, CURRENT_TIMESTAMP, $2)
+//        ON CONFLICT (device_id)
+//        DO UPDATE SET online=TRUE, last_seen=CURRENT_TIMESTAMP, people_count=$2`,
+//       [device_id, people_count ?? 0]
+//     );
+
+//     console.log(
+//       `✅ Heartbeat from ${device_id} (count=${people_count ?? "?"})`
+//     );
+
+//     // 🆕 Send live update to connected dashboards
+//     broadcast({ type: "people_count", device_id, count: people_count ?? 0 });
+
+//     res.send("✅ Heartbeat received");
+//   } catch (err) {
+//     console.error("❌ Heartbeat error:", err.message);
+//     res.status(500).send("Server error");
+//   }
+// });
+
 router.post("/heartbeat", async (req, res) => {
   const { device_id, people_count } = req.body;
   if (!device_id) return res.status(400).send("Missing device_id");
 
+  const finalCount = people_count ?? 0;
+
   try {
+    // 1️⃣ Update device record (online + people_count)
     await pool.query(
       `INSERT INTO devices (device_id, online, last_seen, people_count)
        VALUES ($1, TRUE, CURRENT_TIMESTAMP, $2)
        ON CONFLICT (device_id)
        DO UPDATE SET online=TRUE, last_seen=CURRENT_TIMESTAMP, people_count=$2`,
-      [device_id, people_count ?? 0]
+      [device_id, finalCount]
     );
 
-    console.log(
-      `✅ Heartbeat from ${device_id} (count=${people_count ?? "?"})`
-    );
+    console.log(`✅ Heartbeat from ${device_id} (count=${finalCount})`);
 
-    // 🆕 Send live update to connected dashboards
-    broadcast({ type: "people_count", device_id, count: people_count ?? 0 });
+    // 2️⃣ If people count is zero → turn ON all channels automatically
+    if (finalCount === 0) {
+      console.log(
+        `⚡ People count = 0 → Turning ON all channels for ${device_id}`
+      );
 
-    res.send("✅ Heartbeat received");
+      for (let ch = 0; ch < 4; ch++) {
+        // Update database
+        await pool.query(
+          `INSERT INTO channel_status (device_id, channel_index, status)
+           VALUES ($1, $2, TRUE)
+           ON CONFLICT (device_id, channel_index)
+           DO UPDATE SET status = TRUE, updated_at = CURRENT_TIMESTAMP`,
+          [device_id, ch]
+        );
+
+        // Send ON command to ESP
+        (async () => {
+          try {
+            const espUrl = `http://${device_id}/toggle?channel=${ch}&state=on`;
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 3000);
+
+            await fetch(espUrl, { signal: controller.signal })
+              .then((resp) => {
+                clearTimeout(timeout);
+                if (resp.ok) {
+                  console.log(
+                    `✅ Channel ${ch} auto-turned ON on ${device_id}`
+                  );
+                } else {
+                  console.warn(`⚠️ ESP ${device_id} returned ${resp.status}`);
+                }
+              })
+              .catch((err) =>
+                console.warn(
+                  `⚠️ Failed to auto-turn ON channel ${ch}:`,
+                  err.message
+                )
+              );
+          } catch (err) {
+            console.warn("⚠️ Auto ON error:", err.message);
+          }
+        })();
+      }
+
+      // Optional: Log notification for the user
+      const userResult = await pool.query(
+        "SELECT id FROM users WHERE device_id = $1",
+        [device_id]
+      );
+      const userId = userResult.rows[0]?.id;
+
+      if (userId) {
+        await pool.query(
+          `INSERT INTO notifications (user_id, type, message)
+           VALUES ($1, $2, $3)`,
+          [
+            userId,
+            "auto_on",
+            "All channels automatically turned ON (room empty)",
+          ]
+        );
+      }
+    }
+
+    // 3️⃣ Broadcast live update to dashboards
+    broadcast({ type: "people_count", device_id, count: finalCount });
+
+    // ✅ Done
+    res.json({ success: true, count: finalCount });
   } catch (err) {
     console.error("❌ Heartbeat error:", err.message);
     res.status(500).send("Server error");
   }
 });
+
 
 router.post("/people_count", async (req, res) => {
   const { device_id, count } = req.body;
