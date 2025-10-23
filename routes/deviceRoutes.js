@@ -257,6 +257,7 @@ router.post("/toggle", async (req, res) => {
 //   }
 // });
 
+
 router.post("/heartbeat", async (req, res) => {
   const { device_id, people_count } = req.body;
   if (!device_id) return res.status(400).send("Missing device_id");
@@ -264,7 +265,7 @@ router.post("/heartbeat", async (req, res) => {
   const finalCount = people_count ?? 0;
 
   try {
-    // 1️⃣ Update device record (online + people_count)
+    // 1️⃣ Update or insert device heartbeat
     await pool.query(
       `INSERT INTO devices (device_id, online, last_seen, people_count)
        VALUES ($1, TRUE, CURRENT_TIMESTAMP, $2)
@@ -275,53 +276,43 @@ router.post("/heartbeat", async (req, res) => {
 
     console.log(`✅ Heartbeat from ${device_id} (count=${finalCount})`);
 
-    // 2️⃣ If people count is zero → turn ON all channels automatically
+    // 2️⃣ If count == 0, turn OFF all 4 channels automatically
     if (finalCount === 0) {
       console.log(
-        `⚡ People count = 0 → Turning ON all channels for ${device_id}`
+        `🔌 Room empty (count=0). Turning OFF all channels for ${device_id}`
       );
 
       for (let ch = 0; ch < 4; ch++) {
-        // Update database
         await pool.query(
           `INSERT INTO channel_status (device_id, channel_index, status)
-           VALUES ($1, $2, TRUE)
+           VALUES ($1, $2, FALSE)
            ON CONFLICT (device_id, channel_index)
-           DO UPDATE SET status = TRUE, updated_at = CURRENT_TIMESTAMP`,
+           DO UPDATE SET status = FALSE, updated_at = CURRENT_TIMESTAMP`,
           [device_id, ch]
         );
 
-        // Send ON command to ESP
+        // Try to send command to ESP device
         (async () => {
           try {
             const espUrl = `http://${device_id}/toggle?channel=${ch}&state=off`;
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 3000);
 
-            await fetch(espUrl, { signal: controller.signal })
-              .then((resp) => {
-                clearTimeout(timeout);
-                if (resp.ok) {
-                  console.log(
-                    `✅ Channel ${ch} auto-turned ON on ${device_id}`
-                  );
-                } else {
-                  console.warn(`⚠️ ESP ${device_id} returned ${resp.status}`);
-                }
-              })
-              .catch((err) =>
-                console.warn(
-                  `⚠️ Failed to auto-turn ON channel ${ch}:`,
-                  err.message
-                )
-              );
+            const resp = await fetch(espUrl, { signal: controller.signal });
+            clearTimeout(timeout);
+
+            if (resp.ok) {
+              console.log(`✅ Channel ${ch} turned OFF on ${device_id}`);
+            } else {
+              console.warn(`⚠️ ESP responded ${resp.status} for ${espUrl}`);
+            }
           } catch (err) {
-            console.warn("⚠️ Auto ON error:", err.message);
+            console.warn(`⚠️ Failed to turn off channel ${ch}:`, err.message);
           }
         })();
       }
 
-      // Optional: Log notification for the user
+      // Log notification for user (optional)
       const userResult = await pool.query(
         "SELECT id FROM users WHERE device_id = $1",
         [device_id]
@@ -334,18 +325,17 @@ router.post("/heartbeat", async (req, res) => {
            VALUES ($1, $2, $3)`,
           [
             userId,
-            "auto_on",
-            "All channels automatically turned ON (room empty)",
+            "auto_off",
+            "All channels turned OFF automatically (room empty)",
           ]
         );
       }
     }
 
-    // 3️⃣ Broadcast live update to dashboards
+    // 3️⃣ Send live updates to dashboard clients
     broadcast({ type: "people_count", device_id, count: finalCount });
 
-    // ✅ Done
-    res.json({ success: true, count: finalCount });
+    res.send("✅ Heartbeat received");
   } catch (err) {
     console.error("❌ Heartbeat error:", err.message);
     res.status(500).send("Server error");
