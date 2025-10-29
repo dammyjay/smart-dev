@@ -350,12 +350,71 @@ exports.getProfile = async (req, res) => {
 //   }
 // };
 
+// exports.postProfile = async (req, res) => {
+//   try {
+//     const userId = req.session.user?.id;
+//     if (!userId) return res.status(401).send("Unauthorized");
+
+//     const { full_name, email, device_id, camera_url } = req.body;
+
+//     // Update user info in DB
+//     await pool.query(
+//       `UPDATE users
+//        SET full_name = $1, email = $2, device_id = $3, camera_url = $4
+//        WHERE id = $5`,
+//       [full_name, email, device_id, camera_url, userId]
+//     );
+
+//     // Ensure device entry is linked to user
+//     await pool.query(
+//       `INSERT INTO devices (device_id, user_id, is_default)
+//        VALUES ($1, $2, true)
+//        ON CONFLICT (device_id)
+//        DO UPDATE SET user_id = EXCLUDED.user_id`,
+//       [device_id, userId]
+//     );
+
+//     // Update session
+//     req.session.user.full_name = full_name;
+//     req.session.user.email = email;
+//     req.session.user.device_id = device_id;
+//     req.session.user.camera_url = camera_url;
+
+//     // ✅ Update cache instantly
+//     if (typeof cameraUrlCache !== "undefined") {
+//       cameraUrlCache.set(userId, camera_url);
+//     }
+
+//     // If AJAX/fetch
+//     if (req.xhr || req.headers["content-type"]?.includes("application/json")) {
+//       return res.status(200).json({ success: true });
+//     }
+
+//     return res.redirect("/dashboard");
+//   } catch (err) {
+//     console.error("❌ Update profile error:", err);
+//     if (req.xhr || req.headers["content-type"]?.includes("application/json")) {
+//       return res
+//         .status(500)
+//         .json({ success: false, error: "Server error updating profile." });
+//     }
+//     res.status(500).send("Server error updating profile.");
+//   }
+// };
+
+
 exports.postProfile = async (req, res) => {
   try {
     const userId = req.session.user?.id;
     if (!userId) return res.status(401).send("Unauthorized");
 
-    const { full_name, email, device_id, camera_url } = req.body;
+    let { full_name, email, device_id, camera_url } = req.body;
+
+    // ✅ Automatically append "/stream_simple.html" if not already included
+    if (camera_url && !camera_url.endsWith("/stream_simple.html")) {
+      camera_url = camera_url.replace(/\/+$/, ""); // remove trailing slash if any
+      camera_url += "/stream_simple.html";
+    }
 
     // Update user info in DB
     await pool.query(
